@@ -1,0 +1,23 @@
+#KEYCLOAK Configuraiton
+
+keycloak:
+#  enabled: false
+  realm: SOCLE
+  auth-server-url: https://keycloak-transvers-integration.app.dev.s2m.ma/auth
+  resource: archetype
+  credentials:
+    secret: b2f6f481-6055-4ca6-bc49-36c368f00cb0
+  principal-attribute: preferred_username
+  bearer-only: false
+
+#Enable Or Disable KEYCLOAK
+
+keycloak-add-on:
+  enabled : false
+  unprotectedPaths: ${KEYCLOAK_UNPROTECTED_PATHS:/public/**, /actuator/**}
+
+#Enbale Or Disable Cors Policy & Configure Allowed Addresses
+
+cors:
+  enabled: false
+  allowedAdresses: ${CORS_ALLOWED_ADDRESSES:http://localhost:8080, http://localhost:8081}

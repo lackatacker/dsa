@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels: &labels
+    tier: $K8S_DEPLOYMENT_TIER
+    framework: $K8S_DEPLOYMENT_FRAMEWORK
+    app: $K8S_DEPLOYMENT_NAME
+  name: $K8S_DEPLOYMENT_NAME
+spec:
+  replicas: $K8S_DEPLOYMENT_REPLICAS
+  revisionHistoryLimit: $K8S_DEPLOYMENT_REVISION_HISTORY_LIMIT
+  selector:
+    matchLabels: *labels
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      containers:
+      - name: $K8S_DEPLOYMENT_NAME
+        image: $DOCKER_IMAGE_URI
+        imagePullPolicy: Always
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: $K8S_DEPLOYMENT_PORT
+          initialDelaySeconds: 120
+          timeoutSeconds: 40
+          periodSeconds: 30
+          failureThreshold: 10
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: $K8S_DEPLOYMENT_PORT
+          initialDelaySeconds: 150
+          timeoutSeconds: 20
+          periodSeconds: 20
+          failureThreshold: 10
+        ports:
+        - containerPort: $K8S_DEPLOYMENT_PORT
+          name: app-port
+        resources:
+          requests:
+            memory: "$K8S_DEPLOYMENT_MEM_REQ"
+            cpu: "$K8S_DEPLOYMENT_CPU_REQ"
+          limits:
+            memory: "$K8S_DEPLOYMENT_MEM_LIMIT"
+            cpu: "$K8S_DEPLOYMENT_CPU_LIMIT"
+        env:
+        - name: CORS_ENABLED
+          value: "$CORS_ENABLED"
+        - name: CORS_ALLOWED_ADDRESSES
+          value: "$CORS_ALLOWED_ADDRESSES"
+        - name: JAVA_OPTS
+          value: "$K8S_DEPLOYMENT_JAVA_OPTS"
+        - name: YOUR_MICROSERVICE_MYSQL_HOST
+          value: "$YOUR_MICROSERVICE_MYSQL_HOST"
+        - name: YOUR_MICROSERVICE_MYSQL_DB
+          value: "$YOUR_MICROSERVICE_MYSQL_DB"
+        - name: YOUR_MICROSERVICE_MYSQL_USER
+          value: "$YOUR_MICROSERVICE_MYSQL_USER"
+        - name: YOUR_MICROSERVICE_MYSQL_PASSWORD
+          value: "$YOUR_MICROSERVICE_MYSQL_PASSWORD"
+        - name: KEYCLOAK_AUTH_SERVER_URL
+          value : "$KEYCLOAK_AUTH_SERVER_URL"
+        - name: MICROSERVICE_YOUR_MICROSERVICE_NAME
+          value : "$MICROSERVICE_YOUR_MICROSERVICE_NAME"
+        - name: JAVA_OPTS
+          value: "$K8S_DEPLOYMENT_JAVA_OPTS"
+        args: ["$K8S_DEPLOYMENT_SPRINTBOOT_PORT"]
+      imagePullSecrets:
+      - name: $K8S_DOCKER_IMAGE_SECRET_NAME

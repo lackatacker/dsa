@@ -1,0 +1,227 @@
+pipeline {
+
+ agent any
+
+ tools {
+  maven 'maven3'
+  jdk 'jdk8'
+ }
+ 
+ 
+ environment {
+  GIT_REPO_CREDENTIAL_ID = "ciuser-gitlab-creadentials"
+  GIT_REPO_URI = "https://vcs.dev.s2m.ma/itsp/your-microservice.git"
+  // #################################################
+  // Need to install pipeline-utility-steps plugin
+  DOCKER_FILE_PATH = "./ship/containerization/Dockerfile"
+  ARRTIFACT_PATH = "./target"
+  POM_GROUP_ID = readMavenPom().getGroupId()
+  POM_VERSION = readMavenPom().getVersion()
+  POM_ARTIFACT_ID = readMavenPom() getArtifactId()
+  BUILD_RELEASE_VERSION = readMavenPom().getVersion().replace("-SNAPSHOT", "")
+  GIT_TAG_COMMIT = sh(script: 'git describe --tags --always', returnStdout: true).trim()
+  IS_SNAPSHOT = readMavenPom().getVersion().endsWith("-SNAPSHOT")
+  JAR_FILE = "${env.ARRTIFACT_PATH}/${env.POM_ARTIFACT_ID}-${env.POM_VERSION}.jar"
+  // #################################################
+  DOCKER_BUILD_PATH = "."
+  REGISTRY_ADDRESS = "container-registry.dev.s2m.ma/itsp"
+  REGISTRY_CREDENTIALS_ID = "container-registry-user"
+  // yes | no
+  USE_DOCKER_IMAGE_TAG_SHA256 = "no"
+  DOCKER_IMAGE_NAME = "${env.POM_ARTIFACT_ID}"
+  //DOCKER_IMAGE_TAG = "${env.BUILD_RELEASE_VERSION}-${env.BUILD_NUMBER}"
+  DOCKER_IMAGE_TAG_VERSION = "${env.BUILD_RELEASE_VERSION}"
+  DOCKER_IMAGE_NAME_TAG_VERSION = "${env.DOCKER_IMAGE_NAME}:${env.DOCKER_IMAGE_TAG_VERSION}"
+  DOCKER_IMAGE_NAME_TAG_LATEST = "${env.DOCKER_IMAGE_NAME}:latest"
+  DOCKER_IMAGE_URI_VERSION = "${env.REGISTRY_ADDRESS}/${env.DOCKER_IMAGE_NAME_TAG_VERSION}"
+  DOCKER_IMAGE_URI_LATEST = "${env.REGISTRY_ADDRESS}/${env.DOCKER_IMAGE_NAME_TAG_LATEST}"
+  REGISTRY_URI = "https://${env.REGISTRY_ADDRESS}"
+  // Generate REGISTRY_CREDENTIALS_USR and REGISTRY_CREDENTIALS_PSW
+  REGISTRY_CREDENTIALS = credentials("${env.REGISTRY_CREDENTIALS_ID}")
+  // #################################################
+  K8S_TOKEN_ID = "K8S_TOKEN_ID"
+  K8S_URI = "https://442EFD99300DFC0F8C3FD709B10CD40F.gr7.us-east-2.eks.amazonaws.com"
+  K8S_CONTEXT_NAME = "kubernetes-context"
+  K8S_CLUSTER_NAME = "kubernetes"
+  K8S_NAMESPACE = "transvers-integration"
+  K8S_MANIFESTS_PATH = "./ship/k8s"
+  K8S_DEPLOYMENT_NAME = "${env.POM_ARTIFACT_ID}"
+  K8S_DEPLOYMENT_TIER = "your-microservice"
+  K8S_DEPLOYMENT_FRAMEWORK = "spring-boot"
+  K8S_DEPLOYMENT_REPLICAS = 1
+  K8S_DEPLOYMENT_REVISION_HISTORY_LIMIT = 3
+  K8S_DEPLOYMENT_PORT = 9090
+  K8S_DEPLOYMENT_CONTEXT_PATH = "/"
+  K8S_DOCKER_IMAGE_SECRET_NAME = "your-microservice-image-puller"
+  K8S_DEPLOYMENT_MEM_REQ = "512Mi"
+  K8S_DEPLOYMENT_MEM_LIMIT = "512Mi"
+  K8S_DEPLOYMENT_CPU_REQ = "100m"
+  K8S_DEPLOYMENT_CPU_LIMIT = "850m"
+  K8S_DEPLOYMENT_JAVA_XMX = "128M"
+  K8S_DEPLOYMENT_JAVA_XMS = "128M"
+  K8S_DEPLOYMENT_JAVA_OPTS = "-XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap -XX:MaxRAMFraction=1 -Xms${env.K8S_DEPLOYMENT_JAVA_XMS} -Xmx${env.K8S_DEPLOYMENT_JAVA_XMX}"
+  K8S_DEPLOYMENT_SPRINTBOOT_PORT = "--server.port=${env.K8S_DEPLOYMENT_PORT} --server.servlet.context-path=${env.K8S_DEPLOYMENT_CONTEXT_PATH}"
+  K8S_APP_URI = "your-microservice-transvers-integration.app.dev.s2m.ma"
+  YOUR_MICROSERVICE_MYSQL_HOST = "mysql"
+  YOUR_MICROSERVICE_MYSQL_DB = "your_microservice_db"
+  MYSQL_ROOT_CREDENTIALS = credentials("itsp-mysql-database-ids")
+  YOUR_MICROSERVICE_MYSQL_USER = "${env.MYSQL_ROOT_CREDENTIALS_USR}"
+  YOUR_MICROSERVICE_MYSQL_PASSWORD = "${env.MYSQL_ROOT_CREDENTIALS_PSW}"
+  NEXUS_CREDS = credentials('NEXUS_CREDS')
+  NEXUS_USR = "${NEXUS_CREDS_USR}"
+  NEXUS_PWD = "${NEXUS_CREDS_PSW}"
+  CORS_ENABLED = "true"
+  CORS_ALLOWED_ADDRESSES = "https://transvers-integration.app.dev.s2m.ma"
+  KEYCLOAK_AUTH_SERVER_URL = "http://keycloak.transvers-integration:8080/auth"
+  MICROSERVICE_YOUR_MICROSERVICE_NAME = "transvers-your-microservice-service"
+ }
+ stages {
+
+  stage('Clean and Build') {
+    steps {
+    configFileProvider(
+            [configFile(fileId: 'setting-maven-file', variable: 'MAVEN_SETTINGS')]) {
+              script {
+                try {
+                  sh 'echo compile'
+                  sh 'mvn  -s $MAVEN_SETTINGS  --batch-mode clean compile'
+                } catch (err) {
+                  addGitLabMRComment(comment: "Jenkins CI issue: Error when compiling, please check the job build console: : ${env.BUILD_URL}console")
+                  addGitLabMRComment(comment: err.getMessage())
+                  throw err
+                }
+              }
+            }
+    }
+  }
+
+  stage('Jar Packaging') {
+   steps {
+    configFileProvider(
+            [configFile(fileId: 'setting-maven-file', variable: 'MAVEN_SETTINGS')]) {
+            script {
+              try {
+                sh 'echo package'
+                sh 'mvn  -s $MAVEN_SETTINGS  --batch-mode package -P package-jar -Dmaven.test.skip=true'
+              } catch (err) {
+                throw err
+              }
+            }
+      }
+   }
+  }
+
+  stage('Docker Build & Push') {
+   steps {
+    script {
+     try {
+      sh 'echo "Docker Build & Push"'
+      /**/
+      // Build and push image with Jenkins' docker-plugin
+      withDockerRegistry([credentialsId: "$REGISTRY_CREDENTIALS_ID", url: "$REGISTRY_URI"]) {
+        def image = docker.build("$DOCKER_IMAGE_URI_VERSION", "-f $DOCKER_FILE_PATH $DOCKER_BUILD_PATH")
+        if ("$USE_DOCKER_IMAGE_TAG_SHA256" == "yes") {
+        // Get sha256 URI
+        env.PUSHED_IMAGE_SHA256 = sh(returnStdout: true, script: '''docker push $DOCKER_IMAGE_URI_VERSION|grep sha256|awk {'print $3'}''').trim()
+        env.DOCKER_IMAGE_NAME_TAG_SH256 = "${DOCKER_IMAGE_NAME}@${PUSHED_IMAGE_SHA256}"
+        env.DOCKER_IMAGE_URI_SH256 = "${REGISTRY_ADDRESS}/${DOCKER_IMAGE_NAME_TAG_SH256}"
+        env.DOCKER_IMAGE_URI = "${DOCKER_IMAGE_URI_SH256}"
+        } else {
+        // Push if no sha256 wanted 
+        image.push()
+        env.DOCKER_IMAGE_URI = "${DOCKER_IMAGE_URI_VERSION}"
+        }
+
+        // Push latest image tag
+        sh returnStdout: true, script: '''docker tag $DOCKER_IMAGE_URI_VERSION $DOCKER_IMAGE_URI_LATEST'''
+        sh returnStdout: true, script: '''docker push $DOCKER_IMAGE_URI_LATEST'''
+
+        // Clean build images
+        if (env.DOCKER_IMAGE_NAME) {
+        sh '''
+        docker images | grep "<none>" | awk {'print "docker rmi "$3'} | bash
+        docker images | grep "$DOCKER_IMAGE_NAME" | grep "$DOCKER_IMAGE_TAG_VERSION" | awk {'print "docker rmi "$1":"$2'} | bash
+        docker images | grep "$DOCKER_IMAGE_NAME" | grep latest | awk {'print "docker rmi "$1":"$2'} | bash
+        '''
+        }
+      }/**/
+    } catch (err) {
+        throw err
+    }
+   }
+   }
+  }
+
+  stage('Deploy to K8S: Integration Environement') {
+   steps {
+    sh 'echo Deploy to K8S: Integration Environement'
+    withKubeConfig([credentialsId: "$K8S_TOKEN_ID",
+     serverUrl: "$K8S_URI",
+     contextName: "$K8S_CONTEXT_NAME",
+     clusterName: "$K8S_CLUSTER_NAME",
+     namespace: "$K8S_NAMESPACE"
+    ]) {
+     script {
+      try {
+       //sh 'kubectl get serviceaccount'
+       sh 'kubectl create secret docker-registry $K8S_DOCKER_IMAGE_SECRET_NAME --docker-server=$REGISTRY_ADDRESS --docker-username=$REGISTRY_CREDENTIALS_USR --docker-password=$REGISTRY_CREDENTIALS_PSW||true 2>/dev/null'
+
+       // Make sure Database Exist
+       sh 'kubectl exec deployment.apps/$YOUR_MICROSERVICE_MYSQL_HOST -- mysql --user $YOUR_MICROSERVICE_MYSQL_USER --password=$YOUR_MICROSERVICE_MYSQL_PASSWORD -se "CREATE DATABASE IF NOT EXISTS $YOUR_MICROSERVICE_MYSQL_DB;"'
+
+       // K8S manifests creation update
+       if ("$USE_DOCKER_IMAGE_TAG_SHA256" == "yes") {
+        sh 'echo true: $DOCKER_IMAGE_URI'
+        // The below command can be executed when using sha256
+        sh 'envsubst < $K8S_MANIFESTS_PATH/deployment.yaml|kubectl apply -f -'
+       } else {
+        sh 'echo false: $DOCKER_IMAGE_URI'
+        
+        
+        // The below command can be executed when not using sha256, this require imagePullPolicy: Always
+        //env.IS_DEPLOYMENT_CHANGED = sh(returnStdout: true, script: '''envsubst < $K8S_MANIFESTS_PATH/deployment.yaml|kubectl apply -f -|awk {'print $2 '}''').trim()
+        env.IS_DEPLOYMENT_CHANGED = 'test'
+        sh'envsubst < $K8S_MANIFESTS_PATH/deployment.yaml|kubectl apply -f -'
+        sh 'kubectl rollout restart deployment $K8S_DEPLOYMENT_NAME'
+
+        env.CURRENT_IMAGE_IN_K8S = sh(returnStdout: true, script: '''kubectl get deploy/$K8S_DEPLOYMENT_NAME -o jsonpath="{..image}"|head -n 1''').trim()
+        // Force POD redeployment if not yet redeployed
+        if ("$IS_DEPLOYMENT_CHANGED" == "unchanged" && "$CURRENT_IMAGE_IN_K8S" == "$DOCKER_IMAGE_URI_VERSION") {
+         sh 'echo Restart $K8S_DEPLOYMENT_NAME'
+         sh 'kubectl rollout restart deployment $K8S_DEPLOYMENT_NAME'
+        } /**/
+       }
+
+       sh 'envsubst < $K8S_MANIFESTS_PATH/service.yaml|kubectl apply -f -'
+       sh 'envsubst < $K8S_MANIFESTS_PATH/ingress.yaml|kubectl apply -f -'
+      } catch (err) {
+        throw err
+      }
+     }
+    } /**/
+   }
+  }
+
+  stage('Smoke Tests: Integration Environement') {
+   steps {
+    script {
+     try {
+      sh 'echo Smoke Tests: Integration Environement'
+      sh 'echo Rollback if issue'
+     } catch (err) {
+        throw err
+     }
+    }
+   }
+  }
+  
+  /* the end of stages */
+ }
+
+  post { 
+        always { 
+            slackSend (color: '#138347', message: "Merge request ${currentBuild.currentResult} '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})", channel: "itsp")
+        }
+    }
+
+}

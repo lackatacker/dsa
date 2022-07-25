@@ -1,0 +1,5 @@
+#Configure Application Role for Authorization
+
+role:
+  entity:
+    read: get-entity

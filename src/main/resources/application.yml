@@ -1,0 +1,68 @@
+#GLOBAL APPLICATION CONFIGURATION
+
+#Configure Serer Port
+
+server:
+  port: 8081
+
+#Configure MicroService name, Databse & active profiles
+spring:
+  datasource:
+   url: jdbc:h2:file:./data/demo
+   username: sa
+   password: 1234
+   driverClassName: org.h2.Driver
+  jpa:
+    spring.jpa.database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+      ddl-auto: create-drop
+  application:
+    name: ${MICROSERVICE_YOUR_MICROSERVICE_NAME:nxp-your-microservice-service}
+  main:
+    allow-bean-definition-overriding: true
+  h2:
+    console.enabled: true
+
+
+#Configure Swagger UI
+
+swagger:
+  enabled: true
+  basePackage : @project.groupId@.controller
+  clientId: ${ARCHETYPE_SWAGGER_UI_CLIENT:swagger-ui}
+  clientSecret: ${ARCHETYPE_SWAGGER_UI_SECRET:0fae201f-7c8d-47dd-9443-653827321b9e}
+  title: NXP Your_MicroService Management Rest APIs
+  description: This page lists all the Rest APIs for ITSP NXP Your_MicroService Gateway API.
+  version: 0.0.1
+  contact-name: S2M SIF
+  contact-url: www.s2m.ma
+  contact-email: ksadki@s2m.ma
+
+#Configure App Build
+
+management:
+  server:
+    servlet:
+      context-path: /actuator
+  endpoints:
+    web:
+      exposure:
+        include: '*'
+
+#Configure Fiegn Clients
+
+microservice:
+  simple:
+    name: ${MICROSERVICE_CLIENT_NAME:nxp-client-service}
+    api-url: ${MICROSERVICE_CLIENT_API_URL:http://localhost:9090/api}
+
+#Configure Test Profile
+
+
+---
+
+      
+CURRENCY_ISO_CODE: '4217'
+

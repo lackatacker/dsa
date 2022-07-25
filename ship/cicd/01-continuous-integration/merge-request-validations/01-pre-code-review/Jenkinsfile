@@ -1,0 +1,274 @@
+pipeline {
+
+ agent any
+
+ options {
+  gitlabBuilds(builds: ['Merge with develop Branch', 'Clean and Build', 'Unit Tests','Integration Tests', 'Jar Packaging', 'Code Quality + Static OWASP Security Checks', 'Mark branch ready for code review'])
+ }
+
+ tools {
+  maven 'maven3'
+  jdk 'jdk8'
+ }
+ environment {
+  GITLAB_MR_USER_NAME = "${env.gitlabMergedByUser}"
+  GIT_REPO_CREDENTIAL_ID = "ciuser-gitlab-creadentials"
+  GIT_REPO_URI = "https://vcs.dev.s2m.ma/itsp/your_microservice.git"
+  POM_ARTIFACT_ID = readMavenPom() getArtifactId()
+  SONAR_TOKEN = credentials('s2m-sonar-token')
+  GIT_BRANCH= sh (returnStdout: true, script: "sed 's,/,-,' <<<${gitlabSourceBranch} | tr -d '\n'")
+  NEXUS_CREDS = credentials('NEXUS_CREDS')
+  NEXUS_USR = "${NEXUS_CREDS_USR}"
+  NEXUS_PWD = "${NEXUS_CREDS_PSW}"
+
+ }
+ stages {
+
+  stage('Merge with develop Branch') {
+   steps {
+    script {
+      try {
+        updateGitlabCommitStatus name: 'Merge with develop Branch', state: 'running'
+        addGitLabMRComment(comment: '/label ~"jenkins | build in progress"')
+
+        sh 'echo Merge with develop Branch'
+        sh """
+        git config user.email "${env.gitlabUserEmail}"
+        git config user.name "${env.gitlabUserName}"
+        """
+        checkout changelog: true, poll: true, scm: [
+        $class: 'GitSCM',
+        branches: [[name: "origin/${env.gitlabSourceBranch}"]],
+        doGenerateSubmoduleConfigurations: false,
+        extensions: [[$class: 'PreBuildMerge', options: [fastForwardMode: 'NO_FF', mergeRemote: 'origin', mergeStrategy: 'DEFAULT', mergeTarget: "${env.gitlabTargetBranch}"]]],
+        submoduleCfg: [],
+        userRemoteConfigs: [[credentialsId: "${env.GIT_REPO_CREDENTIAL_ID}",name: 'origin', url: "${env.GIT_REPO_URI}"]]
+        ]
+      } catch (err) {
+        //addGitLabMRComment(comment: err.getMessage())
+        addGitLabMRComment(comment: "{- Jenkins CI issue: Error when merging with master branch, a probably a conflict that you need to resolve manualy, please check the changes tab -}")
+        // https://vcs.dev.s2m.ma/help/user/project/quick_actions
+        addGitLabMRComment(comment: '/relabel ~"jenkins | build failure"')
+        throw err
+      }
+    }
+   }
+   post {
+    success {
+      updateGitlabCommitStatus name: 'Merge with develop Branch', state: 'success'
+    }
+    failure {
+      updateGitlabCommitStatus name: 'Merge with develop Branch', state: 'failed'
+    }
+    aborted {
+      updateGitlabCommitStatus name: 'Merge with develop Branch', state: 'canceled'
+    }
+   }
+  }
+
+  stage('Clean and Build') {
+    steps {
+    configFileProvider(
+            [configFile(fileId: 'setting-maven-file', variable: 'MAVEN_SETTINGS')]) {
+                script {
+                  try {
+                    updateGitlabCommitStatus name: 'Clean and Build', state: 'running'
+                    sh 'echo compile'
+                    sh 'mvn -s $MAVEN_SETTINGS --batch-mode clean compile'
+                  } catch (err) {
+                    //addGitLabMRComment(comment: err.getMessage())
+                    addGitLabMRComment(comment: "{- Jenkins CI issue: Error when compiling, please check the job build console:-} ${env.BUILD_URL}console")
+                    addGitLabMRComment(comment: '/relabel ~"jenkins | build failure"')
+                    throw err
+                  }
+                }
+            }
+    }
+   post {
+    success {
+      updateGitlabCommitStatus name: 'Clean and Build', state: 'success'
+    }
+    failure {
+      updateGitlabCommitStatus name: 'Clean and Build', state: 'failed'
+    }
+    aborted {
+      updateGitlabCommitStatus name: 'Clean and Build', state: 'canceled'
+    }
+   }
+  }
+
+  stage("Unit Tests") {
+    steps {
+    configFileProvider(
+            [configFile(fileId: 'setting-maven-file', variable: 'MAVEN_SETTINGS')]) {
+              script {
+                try {
+                  updateGitlabCommitStatus name: 'Unit Tests', state: 'running'
+                  sh 'echo unit tests'
+                  //sh 'set'
+                  sh 'mvn -s $MAVEN_SETTINGS --batch-mode resources:testResources compiler:testCompile surefire:test'
+                } catch (err) {
+                  //addGitLabMRComment(comment: err.getMessage())
+                  addGitLabMRComment(comment: "{- Jenkins CI issue: one or more Unit Tests Failed, please check the Unit Tests report:-} ${env.BUILD_URL}testReport/")
+                  addGitLabMRComment(comment: '/relabel ~"jenkins | build failure"')
+                  throw err
+                }
+              }
+            }
+    }
+   post {
+    always {
+      script {
+        testExists = fileExists "target/surefire-reports/";
+        if (testExists) {
+            archiveArtifacts "target/**/*"
+            junit 'target/surefire-reports/*.xml'
+            sh 'echo Archive unit tests'
+          } else {
+          sh 'echo No test found'
+          }
+       }
+    }
+    success {
+      updateGitlabCommitStatus name: 'Unit Tests', state: 'success'
+    }
+    failure {
+      updateGitlabCommitStatus name: 'Unit Tests', state: 'failed'
+    }
+    aborted {
+      updateGitlabCommitStatus name: 'Unit Tests', state: 'canceled'
+    }
+  }
+  } 
+
+  stage('Jar Packaging') {
+   steps {
+    script {
+    configFileProvider(
+            [configFile(fileId: 'setting-maven-file', variable: 'MAVEN_SETTINGS')]) {
+      try {
+        updateGitlabCommitStatus name: 'Jar Packaging', state: 'running'
+        sh 'echo package'
+        sh 'mvn  -s $MAVEN_SETTINGS --batch-mode package -P package-jar -Dmaven.test.skip=true'
+      } catch (err) {
+        //addGitLabMRComment(comment: err.getMessage())
+        addGitLabMRComment(comment: "{- Jenkins CI issue: Error when packaging, please check the job build console:-} ${env.BUILD_URL}console")
+        addGitLabMRComment(comment: '/relabel ~"jenkins | build failure"')
+        throw err
+      }
+    }
+    }
+   }
+   post {
+    success {
+      updateGitlabCommitStatus name: 'Jar Packaging', state: 'success'
+    }
+    failure {
+      updateGitlabCommitStatus name: 'Jar Packaging', state: 'failed'
+    }
+    aborted {
+      updateGitlabCommitStatus name: 'Jar Packaging', state: 'canceled'
+    }
+   }
+  }
+
+
+  stage("Integration Tests") {
+   steps {
+            script {
+              try {
+              updateGitlabCommitStatus name: 'Integration Tests', state: 'running'
+              sh 'echo IntegrationTest'
+              } catch (err) {
+                //addGitLabMRComment(comment: err.getMessage())
+                addGitLabMRComment(comment: "{- Jenkins CI issue: one or more Integration Tests Failed, please check the Integration Tests report:-} ${env.BUILD_URL}testReport/")
+                addGitLabMRComment(comment: '/relabel ~"jenkins | build failure"')
+                throw err
+              }
+            }
+   }
+   post {
+    success {
+      updateGitlabCommitStatus name: 'Integration Tests', state: 'success'
+    }
+    failure {
+      updateGitlabCommitStatus name: 'Integration Tests', state: 'failed'
+    }
+    aborted {
+      updateGitlabCommitStatus name: 'Integration Tests', state: 'canceled'
+    }
+   }
+  }
+
+  stage('Code Quality + Static OWASP Security Checks') {
+    environment {
+       scannerHome = tool 'sonarscanscanner'
+    }
+    steps {
+    configFileProvider(
+            [configFile(fileId: 'setting-maven-file', variable: 'MAVEN_SETTINGS')]) {
+      withSonarQubeEnv('sonarqube') {
+            sh "mvn -s $MAVEN_SETTINGS clean install sonar:sonar \
+              -Dsonar.host.url=${SONAR_URL} \
+              -Dsonar.projectKey='${POM_ARTIFACT_ID}-${GIT_BRANCH}-mr' \
+              -Dsonar.projectName='${POM_ARTIFACT_ID}-${GIT_BRANCH}-mr' \
+              -Dsonar.login='${SONAR_TOKEN}'"
+      }
+    }
+   }
+   post {
+    success {
+      updateGitlabCommitStatus name: 'Code Quality + Static OWASP Security Checks', state: 'success'
+    }
+    failure {
+      updateGitlabCommitStatus name: 'Code Quality + Static OWASP Security Checks', state: 'failed'
+    }
+    aborted {
+      updateGitlabCommitStatus name: 'Code Quality + Static OWASP Security Checks', state: 'canceled'
+    }
+   }
+  }
+  
+  stage('Mark branch ready for code review') {
+   steps {
+    updateGitlabCommitStatus name: 'Mark branch ready for code review', state: 'running'
+    sh 'echo accept merge request'
+    addGitLabMRComment(comment: '/relabel ~"branch | code review needed"')
+    addGitLabMRComment(comment: '/label ~"jenkins | build success"')
+    addGitLabMRComment(comment: '{+ All tests via Jenkins for the merge to develop branch passed, please review the below reports and make a code review then accept the mergre request +}')
+    addGitLabMRComment(comment: """
+| Step | Report |
+| ---- | ------ |
+| Merge with develop Branch |  ${env.BUILD_URL}console |
+| Clean and Build | ${env.BUILD_URL}console |
+| Unit Tests | ${env.BUILD_URL}testReport/ |
+| Jar Packaging | ${env.BUILD_URL}console |
+| Integration Tests | ${env.BUILD_URL}testReport/ |
+| Code Quality + Static OWASP Security Checks | https://code-quality.dev.s2m.ma/dashboard?id=${POM_ARTIFACT_ID}-${GIT_BRANCH}-mr |
+| Mark branch ready for code review | ${env.BUILD_URL}console |
+    """)
+    //acceptGitLabMR(useMRDescription: true, removeSourceBranch: false)
+   }
+   post {
+    success {
+      updateGitlabCommitStatus name: 'Mark branch ready for code review', state: 'success'
+    }
+    failure {
+      updateGitlabCommitStatus name: 'Mark branch ready for code review', state: 'failed'
+    }
+    aborted {
+      updateGitlabCommitStatus name: 'Mark branch ready for code review', state: 'canceled'
+    }
+   }
+  }
+  /* the end of stages */
+ }
+
+ post { 
+        always { 
+            slackSend (color: '#ea6b19', message: "Merge requested by ${GITLAB_MR_USER_NAME} branch [${env.gitlabSourceBranch}] \n'${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL}) \n pre-code-review ==> ${currentBuild.currentResult}", channel: "itsp")
+        }
+    }
+ 
+
+}

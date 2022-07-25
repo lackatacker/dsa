@@ -1,0 +1,70 @@
+pipeline {
+
+ agent any
+
+ tools {
+  maven 'maven3'
+  jdk 'jdk8'
+ }
+ 
+ environment {
+  POM_GROUP_ID = readMavenPom().getGroupId()
+  POM_VERSION = readMavenPom().getVersion()
+  POM_ARTIFACT_ID = readMavenPom() getArtifactId()
+  BUILD_RELEASE_VERSION = readMavenPom().getVersion().replace("-SNAPSHOT", "")
+  GIT_TAG_COMMIT = sh(script: 'git describe --tags --always', returnStdout: true).trim()
+  SONAR_TOKEN = credentials('s2m-sonar-token')
+  NEXUS_CREDS = credentials('NEXUS_CREDS')
+  NEXUS_USR = "${NEXUS_CREDS_USR}"
+  NEXUS_PWD = "${NEXUS_CREDS_PSW}"
+ }
+ stages {
+
+  stage('Clean and Build') {
+    steps {
+     configFileProvider(
+        [configFile(fileId: 'setting-maven-file', variable: 'MAVEN_SETTINGS')]) {
+        sh 'mvn -s $MAVEN_SETTINGS  --batch-mode clean compile'
+        sh 'echo compile'
+      }
+   }
+  }
+
+  stage("Unit Tests") {
+   steps {
+     configFileProvider(
+        [configFile(fileId: 'setting-maven-file', variable: 'MAVEN_SETTINGS')]) {
+        sh 'mvn -s $MAVEN_SETTINGS  --batch-mode resources:testResources compiler:testCompile surefire:test'
+        sh 'echo unit tests'
+        }
+   }
+   post {
+    always {
+     archiveArtifacts "target/**/*"
+     junit 'target/surefire-reports/*.xml'
+     sh 'echo Archive unit tests'
+    }
+   }
+  }
+
+  stage('Code Quality + Static OWASP Security Checks') {
+    environment {
+       scannerHome = tool 'sonarscanscanner'
+       GIT_BRANCH= sh (returnStdout: true, script: "sed 's,/,-,' <<<${BRANCH_NAME} | tr -d '\n' ")
+    }
+    steps {
+     configFileProvider(
+        [configFile(fileId: 'setting-maven-file', variable: 'MAVEN_SETTINGS')]) {
+          withSonarQubeEnv('sonarqube') {
+                sh "mvn -s $MAVEN_SETTINGS clean verify sonar:sonar \
+                  -Dsonar.host.url=${SONAR_URL} \
+                  -Dsonar.projectKey='${POM_ARTIFACT_ID}-${GIT_BRANCH}' \
+                  -Dsonar.projectName='${POM_ARTIFACT_ID}-${GIT_BRANCH}' \
+                  -Dsonar.login='${SONAR_TOKEN}'"
+          }
+        }
+   }
+  }
+  /* the end of stages */
+ }
+}
